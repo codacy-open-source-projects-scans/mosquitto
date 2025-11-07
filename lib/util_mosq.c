@@ -80,7 +80,7 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 	/* Check if a lazy bridge should be timed out due to idle. */
 	if(mosq->bridge && mosq->bridge->start_type == bst_lazy
 				&& mosq->sock != INVALID_SOCKET
-				&& now - mosq->next_msg_out - mosq->keepalive >= mosq->bridge->idle_timeout){
+				&& now - mosq->last_msg_in >= mosq->bridge->idle_timeout){
 
 		log__printf(NULL, MOSQ_LOG_NOTICE, "Bridge connection %s has exceeded idle timeout, disconnecting.", mosq->id);
 		net__socket_close(mosq);
@@ -118,18 +118,22 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 			}else{
 				rc = MOSQ_ERR_KEEPALIVE;
 			}
+			void (*on_disconnect)(struct mosquitto *, void *userdata, int rc);
+			void (*on_disconnect_v5)(struct mosquitto *, void *userdata, int rc, const mosquitto_property *props);
 			COMPAT_pthread_mutex_lock(&mosq->callback_mutex);
-			if(mosq->on_disconnect){
-				mosq->in_callback = true;
-				mosq->on_disconnect(mosq, mosq->userdata, rc);
-				mosq->in_callback = false;
-			}
-			if(mosq->on_disconnect_v5){
-				mosq->in_callback = true;
-				mosq->on_disconnect_v5(mosq, mosq->userdata, rc, NULL);
-				mosq->in_callback = false;
-			}
+			on_disconnect = mosq->on_disconnect;
+			on_disconnect_v5 = mosq->on_disconnect_v5;
 			COMPAT_pthread_mutex_unlock(&mosq->callback_mutex);
+			if(on_disconnect){
+				mosq->in_callback = true;
+				on_disconnect(mosq, mosq->userdata, rc);
+				mosq->in_callback = false;
+			}
+			if(on_disconnect_v5){
+				mosq->in_callback = true;
+				on_disconnect_v5(mosq, mosq->userdata, rc, NULL);
+				mosq->in_callback = false;
+			}
 
 			return rc;
 #endif

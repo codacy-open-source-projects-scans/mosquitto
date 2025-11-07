@@ -155,6 +155,7 @@ int packet__queue(struct mosquitto *mosq, struct mosquitto__packet *packet)
 
 #ifdef WITH_BROKER
 	if(db.config->max_queued_messages > 0 && mosq->out_packet_count >= db.config->max_queued_messages){
+		packet__cleanup(packet);
 		mosquitto__free(packet);
 		if(mosq->is_dropping == false){
 			mosq->is_dropping = true;
@@ -246,7 +247,7 @@ int packet__write(struct mosquitto *mosq)
 
 #ifdef WITH_BROKER
 	if(mosq->current_out_packet){
-	   mux__add_out(mosq);
+		mux__add_out(mosq);
 	}
 #endif
 
@@ -266,9 +267,8 @@ int packet__write(struct mosquitto *mosq)
 				packet->to_process -= (uint32_t)write_length;
 				packet->pos += (uint32_t)write_length;
 			}else{
-#ifdef WIN32
-				errno = WSAGetLastError();
-#endif
+				WINDOWS_SET_ERRNO();
+
 				if(errno == EAGAIN || errno == COMPAT_EWOULDBLOCK
 #ifdef WIN32
 						|| errno == WSAENOTCONN
@@ -296,20 +296,24 @@ int packet__write(struct mosquitto *mosq)
 		if(((packet->command)&0xF6) == CMD_PUBLISH){
 			G_PUB_MSGS_SENT_INC(1);
 #ifndef WITH_BROKER
+			void (*on_publish)(struct mosquitto *, void *userdata, int mid);
+			void (*on_publish_v5)(struct mosquitto *, void *userdata, int mid, int reason_code, const mosquitto_property *props);
 			COMPAT_pthread_mutex_lock(&mosq->callback_mutex);
-			if(mosq->on_publish){
-				/* This is a QoS=0 message */
-				mosq->in_callback = true;
-				mosq->on_publish(mosq, mosq->userdata, packet->mid);
-				mosq->in_callback = false;
-			}
-			if(mosq->on_publish_v5){
-				/* This is a QoS=0 message */
-				mosq->in_callback = true;
-				mosq->on_publish_v5(mosq, mosq->userdata, packet->mid, 0, NULL);
-				mosq->in_callback = false;
-			}
+			on_publish = mosq->on_publish;
+			on_publish_v5 = mosq->on_publish_v5;
 			COMPAT_pthread_mutex_unlock(&mosq->callback_mutex);
+			if(on_publish){
+				/* This is a QoS=0 message */
+				mosq->in_callback = true;
+				on_publish(mosq, mosq->userdata, packet->mid);
+				mosq->in_callback = false;
+			}
+			if(on_publish_v5){
+				/* This is a QoS=0 message */
+				mosq->in_callback = true;
+				on_publish_v5(mosq, mosq->userdata, packet->mid, 0, NULL);
+				mosq->in_callback = false;
+			}
 		}else if(((packet->command)&0xF0) == CMD_DISCONNECT){
 			do_client_disconnect(mosq, MOSQ_ERR_SUCCESS, NULL);
 			packet__cleanup(packet);
@@ -395,15 +399,18 @@ int packet__read(struct mosquitto *mosq)
 			/* Clients must send CONNECT as their first command. */
 			if(!(mosq->bridge) && state == mosq_cs_new && (byte&0xF0) != CMD_CONNECT){
 				return MOSQ_ERR_PROTOCOL;
+			}else if((byte&0xF0) == CMD_RESERVED){
+				if(mosq->protocol == mosq_p_mqtt5){
+					send__disconnect(mosq, MQTT_RC_PROTOCOL_ERROR, NULL);
+				}
+				return MOSQ_ERR_PROTOCOL;
 			}
 #endif
 		}else{
 			if(read_length == 0){
 				return MOSQ_ERR_CONN_LOST; /* EOF */
 			}
-#ifdef WIN32
-			errno = WSAGetLastError();
-#endif
+			WINDOWS_SET_ERRNO();
 			if(errno == EAGAIN || errno == COMPAT_EWOULDBLOCK){
 				return MOSQ_ERR_SUCCESS;
 			}else{
@@ -446,9 +453,7 @@ int packet__read(struct mosquitto *mosq)
 				if(read_length == 0){
 					return MOSQ_ERR_CONN_LOST; /* EOF */
 				}
-#ifdef WIN32
-				errno = WSAGetLastError();
-#endif
+				WINDOWS_SET_ERRNO();
 				if(errno == EAGAIN || errno == COMPAT_EWOULDBLOCK){
 					return MOSQ_ERR_SUCCESS;
 				}else{
@@ -523,9 +528,7 @@ int packet__read(struct mosquitto *mosq)
 			mosq->in_packet.to_process -= (uint32_t)read_length;
 			mosq->in_packet.pos += (uint32_t)read_length;
 		}else{
-#ifdef WIN32
-			errno = WSAGetLastError();
-#endif
+			WINDOWS_SET_ERRNO();
 			if(errno == EAGAIN || errno == COMPAT_EWOULDBLOCK){
 				if(mosq->in_packet.to_process > 1000){
 					/* Update last_msg_in time if more than 1000 bytes left to

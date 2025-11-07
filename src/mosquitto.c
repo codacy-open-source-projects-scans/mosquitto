@@ -279,10 +279,17 @@ void listeners__add_websockets(struct lws_context *ws_context, mosq_sock_t fd)
 static int listeners__add_local(const char *host, uint16_t port)
 {
 	struct mosquitto__listener *listeners;
+	bool allow_anonymous;
+
 	listeners = db.config->listeners;
+	if(db.config->security_options.allow_anonymous == -1){
+		allow_anonymous = true;
+	}else{
+		allow_anonymous = db.config->security_options.allow_anonymous;
+	}
 
 	listener__set_defaults(&listeners[db.config->listener_count]);
-	listeners[db.config->listener_count].security_options.allow_anonymous = true;
+	listeners[db.config->listener_count].security_options.allow_anonymous = allow_anonymous;
 	listeners[db.config->listener_count].port = port;
 	listeners[db.config->listener_count].host = mosquitto__strdup(host);
 	if(listeners[db.config->listener_count].host == NULL){
@@ -458,6 +465,7 @@ int main(int argc, char *argv[])
 #endif
 	struct mosquitto *ctxt, *ctxt_tmp;
 
+	mosquitto_time_init();
 #if defined(WIN32) || defined(__CYGWIN__)
 	if(argc == 2){
 		if(!strcmp(argv[1], "run")){
@@ -499,8 +507,17 @@ int main(int argc, char *argv[])
 
 	config__init(&config);
 	rc = config__parse_args(&config, argc, argv);
-	if(rc != MOSQ_ERR_SUCCESS) return rc;
+	if(rc == MOSQ_ERR_UNKNOWN){
+		return MOSQ_ERR_SUCCESS;
+	}else if(rc != MOSQ_ERR_SUCCESS){
+		return rc;
+	}
 	db.config = &config;
+
+	rc = keepalive__init();
+	if(rc){
+		return rc;
+	}
 
 	/* Drop privileges permanently immediately after the config is loaded.
 	 * This requires the user to ensure that all certificates, log locations,
@@ -611,6 +628,7 @@ int main(int argc, char *argv[])
 	mosquitto__free(db.bridges);
 #endif
 	context__free_disused();
+	keepalive__cleanup();
 
 	db__close();
 
@@ -619,6 +637,8 @@ int main(int argc, char *argv[])
 	if(config.pid_file){
 		(void)remove(config.pid_file);
 	}
+
+	mux__cleanup();
 
 	log__close(&config);
 	config__cleanup(db.config);
