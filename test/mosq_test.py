@@ -139,7 +139,7 @@ def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False, 
 
     if expect_fail == False:
         outs, errs = broker.communicate(timeout=timeout)
-        print("FAIL: unable to start broker: %s" % errs)
+        print(f"FAIL: unable to start broker: {errs.decode('utf-8')}")
         raise IOError
     else:
         return broker
@@ -880,19 +880,31 @@ def pack_remaining_length(remaining_length):
 
 
 def get_port(count=1):
-    if count == 1:
-        if len(sys.argv) == 2:
-            return int(sys.argv[1])
+    ports_def = os.environ.get('CTEST_RESOURCE_GROUP_0_PORTS')
+    if ports_def is not None:
+        ports = ports_def.split(";")
+        p = ()
+        for port in ports:
+            (pid, slots) = port.split(",")
+            p = p + (int(pid.split(":")[1]),)
+        if len(p) == 1:
+            return p[0]
         else:
-            return 1888
-    else:
-        if len(sys.argv) >= 1+count:
-            p = ()
-            for i in range(0, count):
-                p = p + (int(sys.argv[1+i]),)
             return p
+    else:
+        if count == 1:
+            if len(sys.argv) == 2:
+                return int(sys.argv[1])
+            else:
+                return 1888
         else:
-            return tuple(range(1888, 1888+count))
+            if len(sys.argv) >= 1+count:
+                p = ()
+                for i in range(0, count):
+                    p = p + (int(sys.argv[1+i]),)
+                return p
+            else:
+                return tuple(range(1888, 1888+count))
 
 
 def do_ping(sock, error_string="pingresp"):
@@ -1266,6 +1278,22 @@ class WebsocketWrapper(object):
     def setblocking(self, flag):
         self._socket.setblocking(flag)
 
+
+def check_features(features):
+    for feature in features:
+        requirement = "ON"
+        if feature[0] == "!":
+            feature = feature[1:]
+            requirement = "OFF"
+
+        env = os.environ.get(feature)
+        if env is not None and env != requirement:
+            return False
+    return True
+
+def require_features(features):
+    if not check_features(features):
+        exit(77)
 
 @atexit.register
 def test_cleanup():
