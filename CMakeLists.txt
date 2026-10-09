@@ -4,7 +4,7 @@
 # To configure the build options either use the CMake gui, or run the command
 # line utility including the "-i" option.
 
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.24)
 
 set (VERSION 2.1.2)
 project(mosquitto
@@ -52,7 +52,7 @@ include(GNUInstallDirs)
 include(CMakePushCheckState)
 include(CheckSourceCompiles)
 
-find_package(cJSON REQUIRED)
+find_package(cJSON CONFIG REQUIRED)
 find_package(argon2)
 
 option_env(INC_MEMTRACK "Include memory tracking support?" ON)
@@ -76,11 +76,33 @@ option_env(WITH_UNIX_SOCKETS "Include Unix Domain Socket support?" ON)
 option_env(WITH_WEBSOCKETS "Include websockets support?" ON)
 option_env(WITH_WEBSOCKETS_BUILTIN "Websockets support uses builtin library? Set OFF to use libwebsockets" ON)
 
+set(LIB_TYPE_PLUGIN MODULE)
+set(LIB_TYPE_LIBRARY SHARED)
+
 if(WITH_FUZZING)
 	set(WITH_TESTS OFF)
-	set(WITH_SHARED_LIBRARIES OFF)
-	set(WITH_STATIC_LIBRARIES ON)
+	set(LIB_TYPE_LIBRARY STATIC)
+	set(LIB_TYPE_PLUGIN STATIC)
+	add_compile_definitions(WITH_FUZZING)
 endif()
+
+function(custom_add_executable EXE)
+	if(WITH_FUZZING)
+		add_library(${EXE} STATIC ${ARGN})
+		set_target_properties(${EXE} PROPERTIES
+			PREFIX ""
+			POSITION_INDEPENDENT_CODE 1
+		)
+	else()
+		add_executable(${EXE} ${ARGN})
+	endif()
+endfunction()
+
+function(custom_install)
+	if(NOT WITH_FUZZING)
+		install(${NARGS})
+	endif()
+endfunction()
 
 if(ARGON2_FOUND)
 	# Disable until separate password handling thread is implemented
@@ -119,6 +141,11 @@ if(WITH_THREADING)
 	add_definitions("-DWITH_THREADING")
 	if(WIN32)
 		find_package(PThreads4W REQUIRED)
+		set (THREADLIB PThreads4W::PThreads4W)
+	else()
+		set(THREADS_PREFER_PTHREAD_FLAG ON)
+		find_package(Threads REQUIRED)
+		set (THREADLIB Threads::Threads)
 	endif()
 endif()
 
@@ -217,8 +244,8 @@ endif()
 # ========================================
 
 if(WITH_BROKER)
-	install(FILES mosquitto.conf RENAME mosquitto.conf.example DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/mosquitto")
-	install(FILES aclfile.example pskfile.example pwfile.example DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/mosquitto")
+	custom_install(FILES mosquitto.conf RENAME mosquitto.conf.example DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/mosquitto")
+	custom_install(FILES aclfile.example pskfile.example pwfile.example DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/mosquitto")
 endif()
 
 # ========================================
@@ -226,14 +253,14 @@ endif()
 # ========================================
 
 configure_file(libmosquitto.pc.in libmosquitto.pc @ONLY)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libmosquitto.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+custom_install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libmosquitto.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
 configure_file(libmosquittopp.pc.in libmosquittopp.pc @ONLY)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libmosquittopp.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+custom_install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libmosquittopp.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
 
 # ========================================
 # Install headers
 # ========================================
-install(
+custom_install(
 	FILES
 	${mosquitto_SOURCE_DIR}/include/mosquitto.h
 	${mosquitto_SOURCE_DIR}/include/mosquitto_broker.h
@@ -242,7 +269,7 @@ install(
 	${mosquitto_SOURCE_DIR}/include/mqtt_protocol.h
 	DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-install(
+custom_install(
 	FILES
 	${mosquitto_SOURCE_DIR}/include/mosquitto/broker.h
 	${mosquitto_SOURCE_DIR}/include/mosquitto/broker_control.h
@@ -301,6 +328,20 @@ if(WITH_TESTS)
 		set(${PY_NAME_LIST} "${LOCAL_LIST}" PARENT_SCOPE)
 	endfunction()
 
+    function(mosq_test_set_windows_path name)
+        if(WIN32)
+            set(PATHMOD
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libmosquitto_common>"
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libmosquitto>"
+                "PATH=path_list_prepend:${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
+            )
+            set_property(TEST ${name}
+				PROPERTY
+					ENVIRONMENT_MODIFICATION "${PATHMOD}"
+			)
+        endif()
+    endfunction()
+
 	function(mosq_set_test_props name)
 		set(fullname "${prefix}-${name}")
 		get_property(test_vars GLOBAL PROPERTY TEST_ENV_VARS)
@@ -309,6 +350,7 @@ if(WITH_TESTS)
 				ENVIRONMENT "${test_vars}"
 				SKIP_RETURN_CODE 77
 		)
+		mosq_test_set_windows_path(${name})
 	endfunction()
 
 	function(add_python_test PY_TEST_LIST PREFIX PORTS PY_TEST_FILE)
